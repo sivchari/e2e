@@ -5,6 +5,7 @@ linters:
     - asciicheck
     - bidichk
     - bodyclose
+    - containedctx
     - cyclop
     - dogsled
     - durationcheck
