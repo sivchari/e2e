@@ -1,11 +1,14 @@
+// Package e2e provides a simple and intuitive HTTP testing framework for Go.
 package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"net/url"
 	"testing"
 )
 
@@ -23,15 +26,17 @@ type TestSuite struct {
 
 // HTTPBuilder builds HTTP requests.
 type HTTPBuilder struct {
-	suite      *TestSuite
-	method     string
-	path       string
-	body       interface{}
-	statusCode int
+	suite  *TestSuite
+	method string
+	path   string
+	body   interface{}
+	resp   *http.Response
 }
 
 // New creates a new test suite.
 func New(t *testing.T, config Config) *TestSuite {
+	t.Helper()
+
 	return &TestSuite{
 		config: config,
 		t:      t,
@@ -64,17 +69,19 @@ func (h *HTTPBuilder) Body(body interface{}) *HTTPBuilder {
 	return h
 }
 
-// ExpectStatus sets the expected status code and executes the request.
-func (h *HTTPBuilder) ExpectStatus(statusCode int) *HTTPBuilder {
-	h.statusCode = statusCode
-	h.execute()
+// Execute performs the HTTP request.
+func (h *HTTPBuilder) Execute(ctx context.Context) *HTTPBuilder {
+	baseURL, err := url.Parse(h.suite.config.BaseURL)
+	if err != nil {
+		h.suite.t.Fatalf("Failed to parse base URL: %v", err)
+	}
 
-	return h
-}
+	path, err := url.Parse(h.path)
+	if err != nil {
+		h.suite.t.Fatalf("Failed to parse path: %v", err)
+	}
 
-// execute performs the HTTP request and validates the response.
-func (h *HTTPBuilder) execute() {
-	url := strings.TrimSuffix(h.suite.config.BaseURL, "/") + "/" + strings.TrimPrefix(h.path, "/")
+	reqURL := baseURL.ResolveReference(path)
 
 	var bodyReader io.Reader
 
@@ -87,7 +94,7 @@ func (h *HTTPBuilder) execute() {
 		bodyReader = bytes.NewBuffer(bodyBytes)
 	}
 
-	req, err := http.NewRequest(h.method, url, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, h.method, reqURL.String(), bodyReader)
 	if err != nil {
 		h.suite.t.Fatalf("Failed to create request: %v", err)
 	}
@@ -100,14 +107,33 @@ func (h *HTTPBuilder) execute() {
 	if err != nil {
 		h.suite.t.Fatalf("Failed to execute request: %v", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != h.statusCode {
-		body, _ := io.ReadAll(resp.Body)
-		h.suite.t.Fatalf("Expected status code %d, got %d. Response body: %s",
-			h.statusCode, resp.StatusCode, string(body))
-	}
+	h.suite.t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			h.suite.t.Logf("Failed to close response body: %v", err)
+		}
+	})
+
+	h.resp = resp
+
+	return h
 }
+
+// ExpectStatus validates the response status code.
+func (h *HTTPBuilder) ExpectStatus(statusCode int) *HTTPBuilder {
+	if h.resp == nil {
+		h.suite.t.Fatal("Request not executed. Call Execute() first.")
+	}
+
+	if h.resp.StatusCode != statusCode {
+		body, _ := io.ReadAll(h.resp.Body)
+		h.suite.t.Fatalf("Expected status code %d, got %d. Response body: %s",
+			statusCode, h.resp.StatusCode, string(body))
+	}
+
+	return h
+}
+
 
 // serializeBody converts the body to JSON bytes.
 func (h *HTTPBuilder) serializeBody() ([]byte, error) {
@@ -121,5 +147,10 @@ func (h *HTTPBuilder) serializeBody() ([]byte, error) {
 	}
 
 	// Otherwise, marshal as JSON
-	return json.Marshal(h.body)
+	bytes, err := json.Marshal(h.body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal body: %w", err)
+	}
+
+	return bytes, nil
 }
