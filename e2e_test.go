@@ -7,11 +7,15 @@ import (
 	"testing"
 )
 
+const (
+	apiUsersPath = "/api/users"
+)
+
 func TestBasicGET(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/health" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"status": "ok"}`))
+			_, _ = w.Write([]byte(`{"status": "ok"}`))
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -26,9 +30,9 @@ func TestBasicGET(t *testing.T) {
 
 func TestBasicPOST(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/users" && r.Method == "POST" {
+		if r.URL.Path == apiUsersPath && r.Method == http.MethodPost {
 			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte(`{"id": "123", "name": "Alice"}`))
+			_, _ = w.Write([]byte(`{"id": "123", "name": "Alice"}`))
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -47,11 +51,11 @@ func TestCombinedRequests(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/health":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"status": "ok"}`))
-		case "/api/users":
-			if r.Method == "POST" {
+			_, _ = w.Write([]byte(`{"status": "ok"}`))
+		case apiUsersPath:
+			if r.Method == http.MethodPost {
 				w.WriteHeader(http.StatusCreated)
-				w.Write([]byte(`{"id": "123", "name": "Alice"}`))
+				_, _ = w.Write([]byte(`{"id": "123", "name": "Alice"}`))
 			}
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -77,27 +81,31 @@ func TestStructBody(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/api/users" && r.Method == "POST":
+		case r.URL.Path == apiUsersPath && r.Method == http.MethodPost:
 			var user User
 			if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
+
 				return
 			}
+
 			if user.Name == "Alice" && user.Email == "alice@example.com" {
 				w.WriteHeader(http.StatusCreated)
-				w.Write([]byte(`{"id": "123", "name": "Alice", "email": "alice@example.com"}`))
+				_, _ = w.Write([]byte(`{"id": "123", "name": "Alice", "email": "alice@example.com"}`))
 			} else {
 				w.WriteHeader(http.StatusBadRequest)
 			}
-		case r.URL.Path == "/auth/login" && r.Method == "POST":
+		case r.URL.Path == "/auth/login" && r.Method == http.MethodPost:
 			var login LoginRequest
 			if err := json.NewDecoder(r.Body).Decode(&login); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
+
 				return
 			}
+
 			if login.Username == "testuser" {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"token": "abc123"}`))
+				_, _ = w.Write([]byte(`{"token": "abc123"}`))
 			} else {
 				w.WriteHeader(http.StatusUnauthorized)
 			}
