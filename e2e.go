@@ -134,7 +134,6 @@ func (h *HTTPBuilder) ExpectStatus(statusCode int) *HTTPBuilder {
 	return h
 }
 
-
 // serializeBody converts the body to JSON bytes.
 func (h *HTTPBuilder) serializeBody() ([]byte, error) {
 	if h.body == nil {
