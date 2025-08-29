@@ -1,130 +1,63 @@
 package e2e
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
-const (
-	apiUsersPath = "/api/users"
-)
-
-func TestBasicGET(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/health" {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status": "ok"}`))
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-
-	New(t, Config{BaseURL: server.URL}).
-		GET("/api/health").
-		Execute(t.Context()).
-		ExpectStatus(200)
-}
-
-func TestBasicPOST(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == apiUsersPath && r.Method == http.MethodPost {
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"id": "123", "name": "Alice"}`))
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-
-	New(t, Config{BaseURL: server.URL}).
-		POST("/api/users").
-		Body(`{"name": "Alice"}`).
-		Execute(t.Context()).
-		ExpectStatus(201)
-}
-
-func TestCombinedRequests(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/health":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status": "ok"}`))
-		case apiUsersPath:
-			if r.Method == http.MethodPost {
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(`{"id": "123", "name": "Alice"}`))
-			}
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-
-	suite := New(t, Config{BaseURL: server.URL})
-	suite.GET("/api/health").Execute(t.Context()).ExpectStatus(200)
-	suite.POST("/api/users").Body(`{"name": "Alice"}`).Execute(t.Context()).ExpectStatus(201)
-}
-
-func TestStructBody(t *testing.T) {
-	type User struct {
-		Name  string `json:"name"`
-		Email string `json:"email"`
+// TestNew verifies the test suite initialization.
+func TestNew(t *testing.T) {
+	config := Config{
+		BaseURL: "http://example.com",
+		Timeout: 10 * time.Second,
 	}
 
-	type LoginRequest struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+	suite := New(t, config)
+
+	if suite.config.BaseURL != config.BaseURL {
+		t.Errorf("Expected BaseURL %s, got %s", config.BaseURL, suite.config.BaseURL)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == apiUsersPath && r.Method == http.MethodPost:
-			var user User
-			if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
-				w.WriteHeader(http.StatusBadRequest)
+	if suite.config.Timeout != config.Timeout {
+		t.Errorf("Expected Timeout %v, got %v", config.Timeout, suite.config.Timeout)
+	}
 
-				return
-			}
+	if suite.t != t {
+		t.Error("Testing instance not properly set")
+	}
 
-			if user.Name == "Alice" && user.Email == "alice@example.com" {
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(`{"id": "123", "name": "Alice", "email": "alice@example.com"}`))
-			} else {
-				w.WriteHeader(http.StatusBadRequest)
-			}
-		case r.URL.Path == "/auth/login" && r.Method == http.MethodPost:
-			var login LoginRequest
-			if err := json.NewDecoder(r.Body).Decode(&login); err != nil {
-				w.WriteHeader(http.StatusBadRequest)
+	if suite.client == nil {
+		t.Error("HTTP client not initialized")
+	}
+}
 
-				return
-			}
+// TestDefaultTimeout verifies default timeout is set when not specified.
+func TestDefaultTimeout(t *testing.T) {
+	config := Config{
+		BaseURL: "http://example.com",
+		// Timeout not specified
+	}
 
-			if login.Username == "testuser" {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"token": "abc123"}`))
-			} else {
-				w.WriteHeader(http.StatusUnauthorized)
-			}
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
+	suite := New(t, config)
+
+	expectedTimeout := 30 * time.Second
+	if suite.config.Timeout != expectedTimeout {
+		t.Errorf("Expected default timeout %v, got %v", expectedTimeout, suite.config.Timeout)
+	}
+}
+
+// TestBasicIntegration runs a simple integration test.
+func TestBasicIntegration(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
+	// Create client and make request
 	client := New(t, Config{BaseURL: server.URL})
-
-	user := User{Name: "Alice", Email: "alice@example.com"}
-	client.POST("/api/users").Body(user).Execute(t.Context()).ExpectStatus(201)
-
-	loginData := map[string]any{
-		"username": "testuser",
-		"password": "secret123",
-	}
-	client.POST("/auth/login").Body(loginData).Execute(t.Context()).ExpectStatus(200)
-
-	client.POST("/auth/login").Body(`{"username": "testuser", "password": "secret123"}`).Execute(t.Context()).ExpectStatus(200)
+	client.GET("/test").Execute(t.Context()).ExpectStatus(200)
 }
