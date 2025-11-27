@@ -22,7 +22,7 @@ type Config struct {
 // TestSuite represents the main test suite.
 type TestSuite struct {
 	config Config
-	t      *testing.T
+	t      testing.TB
 	client *http.Client
 }
 
@@ -36,11 +36,17 @@ type HTTPBuilder struct {
 	query   map[string]string
 	timeout time.Duration
 	resp    *http.Response
+
+	// Request details for error reporting
+	requestURL     string
+	requestHeaders http.Header
+	requestBody    []byte
+	responseBody   []byte
 }
 
 // New creates a new test suite.
-func New(t *testing.T, config Config) *TestSuite {
-	t.Helper()
+func New(tb testing.TB, config Config) *TestSuite {
+	tb.Helper()
 
 	// Set default timeout if not specified
 	if config.Timeout == 0 {
@@ -49,7 +55,7 @@ func New(t *testing.T, config Config) *TestSuite {
 
 	return &TestSuite{
 		config: config,
-		t:      t,
+		t:      tb,
 		client: &http.Client{
 			Timeout: config.Timeout,
 		},
@@ -167,6 +173,11 @@ func (h *HTTPBuilder) Execute(ctx context.Context) *HTTPBuilder {
 	ctx = h.applyTimeout(ctx)
 	req := h.createRequest(ctx, reqURL, bodyReader)
 	h.setHeaders(req)
+
+	// Store request details for error reporting
+	h.requestURL = reqURL.String()
+	h.requestHeaders = req.Header.Clone()
+
 	h.executeRequest(req, reqURL)
 
 	return h
@@ -207,6 +218,9 @@ func (h *HTTPBuilder) prepareBody() io.Reader {
 	if err != nil {
 		h.suite.t.Fatalf("Failed to serialize body: %v", err)
 	}
+
+	// Store request body for error reporting
+	h.requestBody = bodyBytes
 
 	return bytes.NewBuffer(bodyBytes)
 }
@@ -270,9 +284,9 @@ func (h *HTTPBuilder) ExpectStatus(statusCode int) *HTTPBuilder {
 	}
 
 	if h.resp.StatusCode != statusCode {
-		body, _ := io.ReadAll(h.resp.Body)
-		h.suite.t.Fatalf("Status code mismatch for %s %s:\n  Expected: %d\n  Actual: %d\n  Response body: %s",
-			h.method, h.path, statusCode, h.resp.StatusCode, string(body))
+		expected := fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode))
+		actual := fmt.Sprintf("%d %s", h.resp.StatusCode, http.StatusText(h.resp.StatusCode))
+		h.suite.t.Fatal(h.formatError("Status code mismatch", expected, actual))
 	}
 
 	return h
@@ -284,10 +298,7 @@ func (h *HTTPBuilder) ExpectJSON(expected interface{}) *HTTPBuilder {
 		h.suite.t.Fatal("Request not executed. Call Execute() first.")
 	}
 
-	body, err := io.ReadAll(h.resp.Body)
-	if err != nil {
-		h.suite.t.Fatalf("Failed to read response body: %v", err)
-	}
+	body := h.readResponseBody()
 
 	// Parse actual response
 	var actual interface{}
@@ -307,8 +318,7 @@ func (h *HTTPBuilder) ExpectJSON(expected interface{}) *HTTPBuilder {
 		if !jsonEqual(expectedParsed, actual) {
 			expectedJSON, _ := json.MarshalIndent(expectedParsed, "", "  ")
 			actualJSON, _ := json.MarshalIndent(actual, "", "  ")
-			h.suite.t.Fatalf("JSON response mismatch for %s %s:\n\nExpected:\n%s\n\nActual:\n%s",
-				h.method, h.path, string(expectedJSON), string(actualJSON))
+			h.suite.t.Fatal(h.formatError("JSON response mismatch", string(expectedJSON), string(actualJSON)))
 		}
 	default:
 		// Marshal expected to JSON and back to normalize it
@@ -325,8 +335,7 @@ func (h *HTTPBuilder) ExpectJSON(expected interface{}) *HTTPBuilder {
 		if !jsonEqual(expectedNormalized, actual) {
 			expectedJSON, _ := json.MarshalIndent(expectedNormalized, "", "  ")
 			actualJSON, _ := json.MarshalIndent(actual, "", "  ")
-			h.suite.t.Fatalf("JSON response mismatch for %s %s:\n\nExpected:\n%s\n\nActual:\n%s",
-				h.method, h.path, string(expectedJSON), string(actualJSON))
+			h.suite.t.Fatal(h.formatError("JSON response mismatch", string(expectedJSON), string(actualJSON)))
 		}
 	}
 
@@ -341,8 +350,8 @@ func (h *HTTPBuilder) ExpectHeader(key, value string) *HTTPBuilder {
 
 	actualValue := h.resp.Header.Get(key)
 	if actualValue != value {
-		h.suite.t.Fatalf("Header mismatch for %s %s:\n  Header: %s\n  Expected: %q\n  Actual: %q",
-			h.method, h.path, key, value, actualValue)
+		assertion := fmt.Sprintf("Header mismatch (%s)", key)
+		h.suite.t.Fatal(h.formatError(assertion, value, actualValue))
 	}
 
 	return h
@@ -374,4 +383,85 @@ func (h *HTTPBuilder) serializeBody() ([]byte, error) {
 	}
 
 	return bytes, nil
+}
+
+// readResponseBody reads the response body and caches it for reuse.
+func (h *HTTPBuilder) readResponseBody() []byte {
+	if h.responseBody != nil {
+		return h.responseBody
+	}
+
+	body, err := io.ReadAll(h.resp.Body)
+	if err != nil {
+		h.suite.t.Fatalf("Failed to read response body: %v", err)
+	}
+
+	h.responseBody = body
+
+	return body
+}
+
+const maxBodySize = 1024
+
+// formatError creates a detailed error message with request/response information.
+func (h *HTTPBuilder) formatError(assertion, expected, actual string) string {
+	var sb bytes.Buffer
+
+	sb.WriteString("\n=== HTTP Request Failed ===\n")
+	sb.WriteString(fmt.Sprintf("Request:  %s %s\n", h.method, h.path))
+	sb.WriteString(fmt.Sprintf("URL:      %s\n", h.requestURL))
+
+	h.writeHeaders(&sb, "Request", h.requestHeaders)
+
+	// Request body
+	if len(h.requestBody) > 0 {
+		sb.WriteString(fmt.Sprintf("Body:     %s\n", h.truncateBody(h.requestBody)))
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("Response: %d %s\n", h.resp.StatusCode, http.StatusText(h.resp.StatusCode)))
+
+	h.writeHeaders(&sb, "Response", h.resp.Header)
+
+	// Response body
+	respBody := h.readResponseBody()
+	if len(respBody) > 0 {
+		sb.WriteString(fmt.Sprintf("Body:     %s\n", h.truncateBody(respBody)))
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("%s:\n", assertion))
+	sb.WriteString(fmt.Sprintf("Expected: %s\n", expected))
+	sb.WriteString(fmt.Sprintf("Actual:   %s\n", actual))
+
+	return sb.String()
+}
+
+// writeHeaders writes headers to the buffer with proper formatting.
+func (h *HTTPBuilder) writeHeaders(sb *bytes.Buffer, _ string, headers http.Header) {
+	if len(headers) == 0 {
+		return
+	}
+
+	sb.WriteString("Headers:  ")
+
+	first := true
+	for key, values := range headers {
+		if !first {
+			sb.WriteString("          ")
+		}
+
+		fmt.Fprintf(sb, "%s: %s\n", key, values[0])
+
+		first = false
+	}
+}
+
+// truncateBody truncates a body if it exceeds the maximum size.
+func (h *HTTPBuilder) truncateBody(body []byte) string {
+	if len(body) <= maxBodySize {
+		return string(body)
+	}
+
+	return string(body[:maxBodySize]) + "... (truncated)"
 }
