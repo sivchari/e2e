@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package testpb;
+
+option go_package = "github.com/sivchari/e2e/test/e2e/grpc/testserver/proto";
+
+service TestService {
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  rpc Echo(EchoRequest) returns (EchoResponse);
+}
+
+message GetUserRequest {
+  string id = 1;
+}
+
+message GetUserResponse {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+}
+
+message CreateUserRequest {
+  string name = 1;
+  string email = 2;
+}
+
+message CreateUserResponse {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+}
+
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  string message = 1;
+  map<string, string> metadata = 2;
+}
